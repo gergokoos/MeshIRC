@@ -58,4 +58,4 @@ Features include:
 
 ## License
 
-Do whatever you want with this. Have fun!
+GNU General Public License v3 (GPL 3). See the LICENSE file for details.
