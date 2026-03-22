@@ -1,0 +1,18 @@
+{
+  "id": "mesh_irc",
+  "name": "Mesh IRC",
+  "version": "1.0.0",
+  "author": "grg",
+  "description": "Standalone IRC server that bridges all Meshtastic mesh channels and nodes bidirectionally.",
+  "entry_point": "main.py",
+  "router_prefix": "/api/plugins/mesh_irc",
+  "static_prefix": "/static/plugins/mesh_irc",
+  "watchdog": true,
+  "nav_menu": [
+    {
+      "label": "Mesh IRC",
+      "icon": "fa-comments",
+      "href": "/plugin/mesh_irc/index.html"
+    }
+  ]
+}

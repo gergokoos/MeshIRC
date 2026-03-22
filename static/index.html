@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>Mesh IRC — MeshDash Plugin</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet"/>
+<style>
+:root{
+  --bg0:#080b10;--bg1:#0d1117;--bg2:#141a22;--bg3:#1a2330;
+  --bd:#1e2c3a;--bd2:#253545;
+  --acc:#00d4ff;--acc2:#0099cc;
+  --grn:#00ff9d;--grn2:#00cc7a;
+  --ylw:#ffd166;--red:#ff4d6d;--prp:#c792ea;
+  --txt:#c8d8e8;--txt2:#7a9ab8;--txt3:#4a6a88;
+  --mono:'JetBrains Mono',monospace;--sans:'Syne',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg0);color:var(--txt);font-family:var(--sans);min-height:100vh;overflow-x:hidden;}
+body::before{content:'';position:fixed;inset:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,212,255,.012) 2px,rgba(0,212,255,.012) 4px);pointer-events:none;z-index:9999;}
+
+/* HEADER */
+.hdr{background:linear-gradient(135deg,var(--bg1),var(--bg2));border-bottom:1px solid var(--bd);padding:24px 36px;position:relative;overflow:hidden;}
+.hdr::after{content:'';position:absolute;bottom:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,var(--acc),var(--grn),transparent);}
+.hdr-inner{display:flex;align-items:center;gap:18px;max-width:1500px;margin:0 auto;}
+.hdr-icon{width:48px;height:48px;background:linear-gradient(135deg,var(--prp),#9f5fe0);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px;box-shadow:0 0 28px rgba(199,146,234,.35);flex-shrink:0;}
+.hdr-title{font-size:1.55rem;font-weight:800;color:#fff;letter-spacing:-.5px;}
+.hdr-sub{font-family:var(--mono);font-size:.72rem;color:var(--txt2);margin-top:2px;}
+.hdr-right{margin-left:auto;display:flex;gap:8px;align-items:center;}
+.badge{font-family:var(--mono);font-size:.62rem;font-weight:700;padding:3px 9px;border-radius:4px;letter-spacing:.5px;text-transform:uppercase;}
+.b-acc{background:rgba(0,212,255,.1);color:var(--acc);border:1px solid rgba(0,212,255,.2);}
+.b-grn{background:rgba(0,255,157,.08);color:var(--grn);border:1px solid rgba(0,255,157,.18);}
+.b-red{background:rgba(255,77,109,.08);color:var(--red);border:1px solid rgba(255,77,109,.18);}
+.b-ylw{background:rgba(255,209,102,.08);color:var(--ylw);border:1px solid rgba(255,209,102,.18);}
+
+/* LAYOUT */
+.layout{display:flex;max-width:1500px;margin:0 auto;min-height:calc(100vh - 97px);}
+.sidebar{width:220px;flex-shrink:0;border-right:1px solid var(--bd);padding:20px 0;position:sticky;top:0;height:calc(100vh - 97px);overflow-y:auto;}
+.main{flex:1;padding:28px 36px;overflow-y:auto;}
+
+/* NAV */
+.sb-grp{padding:0 14px 14px;}
+.sb-lbl{font-family:var(--mono);font-size:.58rem;font-weight:700;color:var(--txt3);letter-spacing:1.5px;text-transform:uppercase;padding:0 8px;margin-bottom:6px;display:block;}
+.nav-item{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:6px;cursor:pointer;transition:all .14s;font-size:.78rem;font-weight:600;color:var(--txt2);border:1px solid transparent;margin-bottom:1px;}
+.nav-item:hover{background:var(--bg2);color:var(--txt);}
+.nav-item.active{background:rgba(199,146,234,.07);color:var(--prp);border-color:rgba(199,146,234,.18);}
+.sb-divider{height:1px;background:var(--bd);margin:8px 14px 14px;}
+
+/* STATUS CARDS */
+.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-bottom:24px;}
+.stat-card{background:linear-gradient(135deg,var(--bg2),var(--bg3));border:1px solid var(--bd);border-radius:12px;padding:20px 24px;position:relative;overflow:hidden;}
+.stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--acc),var(--prp),var(--grn));}
+.stat-card.running::before{background:linear-gradient(90deg,var(--grn),#00cc7a);}
+.stat-card.stopped::before{background:linear-gradient(90deg,var(--red),#cc3355);}
+.stat-icon{font-size:1.5rem;margin-bottom:8px;}
+.stat-label{font-family:var(--mono);font-size:.65rem;color:var(--txt2);text-transform:uppercase;letter-spacing:1px;}
+.stat-value{font-size:1.8rem;font-weight:800;color:#fff;margin-top:4px;}
+.stat-sub{font-family:var(--mono);font-size:.62rem;color:var(--txt3);margin-top:4px;}
+
+/* SECTIONS */
+.sec-hd{display:flex;align-items:center;gap:12px;margin:30px 0 18px;padding-top:4px;}
+.sec-hd:first-child{margin-top:0;}
+.sec-hd h3{font-size:.78rem;font-weight:700;color:var(--txt2);text-transform:uppercase;letter-spacing:1.2px;white-space:nowrap;}
+.sec-hd::after{content:'';flex:1;height:1px;background:var(--bd);}
+
+/* TABLES */
+.data-table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:.7rem;margin:10px 0;}
+.data-table th{background:var(--bg2);color:var(--txt2);font-weight:700;text-align:left;padding:10px 14px;border-bottom:1px solid var(--bd);font-size:.6rem;text-transform:uppercase;letter-spacing:.08em;}
+.data-table td{padding:10px 14px;border-bottom:1px solid var(--bd);color:var(--txt2);vertical-align:top;}
+.data-table tr:hover{background:var(--bg1);}
+.data-table td:first-child{color:var(--acc);white-space:nowrap;}
+.data-table .nick{color:var(--prp);font-weight:600;}
+.data-table .channel{color:var(--grn);}
+.data-table .node-id{color:var(--txt3);font-size:.65rem;}
+
+/* BUTTONS */
+.btn{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:.72rem;font-weight:700;padding:8px 16px;border-radius:7px;border:none;cursor:pointer;transition:all .18s;letter-spacing:.2px;}
+.btn-primary{background:linear-gradient(135deg,var(--acc),var(--acc2));color:var(--bg0);}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 4px 18px rgba(0,212,255,.4);}
+.btn-secondary{background:var(--bg2);color:var(--txt);border:1px solid var(--bd);}
+.btn-secondary:hover{background:var(--bg3);border-color:var(--bd2);}
+.btn-danger{background:linear-gradient(135deg,var(--red),#cc3355);color:#fff;}
+.btn:disabled{opacity:.45;cursor:not-allowed;transform:none;box-shadow:none;}
+
+/* CONTROLS */
+.controls{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap;}
+.controls .btn{font-size:.65rem;padding:6px 12px;}
+
+/* FORM ELEMENTS */
+.form-group{margin-bottom:16px;}
+.form-label{display:block;font-family:var(--mono);font-size:.7rem;color:var(--txt2);margin-bottom:6px;}
+.form-input{width:100%;background:var(--bg1);border:1px solid var(--bd);border-radius:6px;padding:10px 14px;font-family:var(--mono);font-size:.75rem;color:var(--txt);transition:border-color .2s;}
+.form-input:focus{outline:none;border-color:var(--acc);}
+.form-select{width:100%;background:var(--bg1);border:1px solid var(--bd);border-radius:6px;padding:10px 14px;font-family:var(--mono);font-size:.75rem;color:var(--txt);cursor:pointer;}
+.form-select:focus{outline:none;border-color:var(--acc);}
+
+/* TOGGLE SWITCH */
+.toggle{position:relative;display:inline-flex;align-items:center;cursor:pointer;}
+.toggle input{opacity:0;width:0;height:0;}
+.toggle-slider{width:44px;height:24px;background:var(--bg3);border-radius:12px;position:relative;transition:.2s;border:1px solid var(--bd);}
+.toggle-slider::before{content:'';position:absolute;width:18px;height:18px;background:var(--txt2);border-radius:50%;top:2px;left:2px;transition:.2s;}
+.toggle input:checked + .toggle-slider{background:var(--acc);border-color:var(--acc);}
+.toggle input:checked + .toggle-slider::before{transform:translateX(20px);background:#fff;}
+
+/* SETTINGS CARD */
+.settings-card{background:var(--bg2);border:1px solid var(--bd);border-radius:10px;padding:20px;margin-bottom:16px;}
+.settings-row{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--bd);}
+.settings-row:last-child{border-bottom:none;}
+.settings-label{font-family:var(--mono);font-size:.72rem;color:var(--txt);}
+.settings-desc{font-family:var(--mono);font-size:.62rem;color:var(--txt3);margin-top:2px;}
+
+/* LOADING */
+.loading{font-family:var(--mono);font-size:.7rem;color:var(--txt3);padding:20px;text-align:center;}
+.spin{animation:spin 1s linear infinite;display:inline-block;}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+/* EMPTY STATE */
+.empty{font-family:var(--mono);font-size:.7rem;color:var(--txt3);padding:30px;text-align:center;background:var(--bg2);border:1px dashed var(--bd);border-radius:8px;}
+
+/* STATUS BAR */
+#status-bar{position:fixed;bottom:0;left:0;right:0;background:var(--bg1);border-top:1px solid var(--bd);padding:6px 24px;display:flex;align-items:center;gap:12px;font-family:var(--mono);font-size:.65rem;color:var(--txt2);z-index:200;}
+#status-bar .dot{width:7px;height:7px;border-radius:50%;}
+.pulse{animation:pulse 2s infinite;}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* scrollbar */
+::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar-track{background:var(--bg0);}
+::-webkit-scrollbar-thumb{background:var(--bd2);border-radius:3px;}
+
+@media(max-width:820px){.sidebar{display:none;}.main{padding:16px;}.hdr{padding:16px;}}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="hdr">
+  <div class="hdr-inner">
+    <div class="hdr-icon">💬</div>
+    <div>
+      <div class="hdr-title">Mesh IRC</div>
+      <div class="hdr-sub">IRC Server bridging Meshtastic mesh channels</div>
+    </div>
+    <div class="hdr-right">
+      <span id="server-badge" class="badge b-ylw">● Loading...</span>
+    </div>
+  </div>
+</div>
+
+<div class="layout">
+
+<!-- SIDEBAR -->
+<div class="sidebar">
+  <div class="sb-grp">
+    <span class="sb-lbl">Overview</span>
+    <div class="nav-item active" onclick="showSection('status')"><span>📊</span>Status</div>
+  </div>
+  <div class="sb-divider"></div>
+  <div class="sb-grp">
+    <span class="sb-lbl">Management</span>
+    <div class="nav-item" onclick="showSection('clients')"><span>👥</span>IRC Clients</div>
+    <div class="nav-item" onclick="showSection('nodes')"><span>📡</span>Mesh Nodes</div>
+    <div class="nav-item" onclick="showSection('channels')"><span>#️⃣</span>Channels</div>
+    <div class="nav-item" onclick="showSection('buffer')"><span>📬</span>BNC Buffer</div>
+  </div>
+  <div class="sb-divider"></div>
+  <div class="sb-grp">
+    <span class="sb-lbl">Settings</span>
+    <div class="nav-item" onclick="showSection('settings')"><span>⚙️</span>Configuration</div>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div class="main">
+
+<!-- STATUS SECTION -->
+<div id="section-status">
+  <div class="status-grid">
+    <div class="stat-card" id="stat-server">
+      <div class="stat-icon">🖥️</div>
+      <div class="stat-label">IRC Server</div>
+      <div class="stat-value" id="server-status">Loading...</div>
+      <div class="stat-sub">Port <span id="server-port">6667</span></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon">👤</div>
+      <div class="stat-label">Connected Users</div>
+      <div class="stat-value" id="stat-clients">0</div>
+      <div class="stat-sub">IRC clients</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon">📡</div>
+      <div class="stat-label">Mesh Nodes</div>
+      <div class="stat-value" id="stat-nodes">0</div>
+      <div class="stat-sub">Virtual IRC users</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon">#️⃣</div>
+      <div class="stat-label">Channels</div>
+      <div class="stat-value" id="stat-channels">0</div>
+      <div class="stat-sub">Bridged channels</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-icon">📬</div>
+      <div class="stat-label">Buffered</div>
+      <div class="stat-value" id="stat-buffered">0</div>
+      <div class="stat-sub">Offline messages</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button class="btn btn-secondary" onclick="refreshAll()">🔄 Refresh</button>
+    <button class="btn btn-primary" onclick="restartServer()">🔁 Restart Server</button>
+  </div>
+
+  <div class="sec-hd"><h3>How It Works</h3></div>
+  <div class="about-desc" style="font-family:var(--mono);font-size:.73rem;color:var(--txt2);line-height:1.8;background:var(--bg2);border:1px solid var(--bd);border-radius:8px;padding:16px;">
+    <p style="margin-bottom:10px;"><strong style="color:var(--prp)">Every Meshtastic node is a virtual IRC user.</strong></p>
+    <p style="margin-bottom:10px;">• Connect: <code style="color:var(--acc)" id="irc-hostname">mesh-dash:6667</code></p>
+    <p style="margin-bottom:10px;">• Your nick is automatically set to your node's LongName-ShortName</p>
+    <p style="margin-bottom:10px;">• <strong style="color:var(--ylw)">BNC:</strong> Messages are buffered when offline. Auto-replayed on join!</p>
+    <p style="margin-bottom:10px;">• IRC Commands: <code style="color:var(--acc)">/REPLAYBUFFER</code> - replay all buffered | <code style="color:var(--acc)">/CLEARBUFFER</code> - clear buffer</p>
+    <p>• Use <code style="color:var(--acc)">/WHOIS nodename</code> to see node info (last heard, hardware)</p>
+  </div>
+  <script>document.getElementById('irc-hostname').textContent = window.location.hostname + ':6667';</script>
+</div>
+
+<!-- CLIENTS SECTION -->
+<div id="section-clients" style="display:none;">
+  <div class="sec-hd"><h3>Connected IRC Clients</h3></div>
+  <div id="clients-list">
+    <div class="loading"><span class="spin">⟳</span> Loading...</div>
+  </div>
+</div>
+
+<!-- NODES SECTION -->
+<div id="section-nodes" style="display:none;">
+  <div class="sec-hd"><h3>Virtual Mesh Nodes</h3></div>
+  <div id="nodes-list">
+    <div class="loading"><span class="spin">⟳</span> Loading...</div>
+  </div>
+</div>
+
+<!-- CHANNELS SECTION -->
+<div id="section-channels" style="display:none;">
+  <div class="sec-hd"><h3>IRC Channels</h3></div>
+  <div id="channels-list">
+    <div class="loading"><span class="spin">⟳</span> Loading...</div>
+  </div>
+</div>
+
+<!-- BUFFER SECTION -->
+<div id="section-buffer" style="display:none;">
+  <div class="sec-hd"><h3>BNC Offline Message Buffer</h3></div>
+  <div class="controls">
+    <button class="btn btn-secondary" onclick="loadBuffer()">🔄 Refresh</button>
+    <button class="btn btn-danger" onclick="clearBuffer()">🗑️ Clear Buffer</button>
+  </div>
+  <div id="buffer-list">
+    <div class="loading"><span class="spin">⟳</span> Loading...</div>
+  </div>
+</div>
+
+<!-- SETTINGS SECTION -->
+<div id="section-settings" style="display:none;">
+  <div class="sec-hd"><h3>BNC (Bouncer) Settings</h3></div>
+  
+  <div class="settings-card">
+    <div class="settings-row">
+      <div>
+        <div class="settings-label">Enable BNC Buffering</div>
+        <div class="settings-desc">Buffer messages when no IRC client is connected</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="setting-bnc-enabled" onchange="saveSettings()">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+    
+    <div class="settings-row">
+      <div>
+        <div class="settings-label">Buffer Size (per channel)</div>
+        <div class="settings-desc">Maximum messages to store per channel</div>
+      </div>
+      <select id="setting-buffer-size" class="form-select" style="width:120px;" onchange="saveSettings()">
+        <option value="10">10</option>
+        <option value="25">25</option>
+        <option value="50">50</option>
+        <option value="100">100</option>
+        <option value="200">200</option>
+      </select>
+    </div>
+    
+    <div class="settings-row">
+      <div>
+        <div class="settings-label">Keep After Replay</div>
+        <div class="settings-desc">Don't delete messages after replay (use /clearbuffer to manually clear)</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="setting-keep-replay" onchange="saveSettings()">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+  </div>
+  
+  <div class="sec-hd"><h3>IRC Server Settings</h3></div>
+  
+  <div class="settings-card">
+    <div class="settings-row">
+      <div>
+        <div class="settings-label">IRC Server Port</div>
+        <div class="settings-desc">Port for IRC clients to connect to</div>
+      </div>
+      <input type="number" id="setting-irc-port" class="form-input" style="width:100px;" min="1024" max="65535" onchange="saveSettings()">
+    </div>
+    
+    <div class="settings-row">
+      <div>
+        <div class="settings-label">Require Password</div>
+        <div class="settings-desc">Enable password authentication for IRC connections</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="setting-irc-password-enabled" onchange="saveSettings()">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+    
+    <div class="settings-row">
+      <div>
+        <div class="settings-label">IRC Password</div>
+        <div class="settings-desc">Default: your node's short_name</div>
+      </div>
+      <input type="text" id="setting-irc-password" class="form-input" style="width:150px;" placeholder="Auto (short_name)" onchange="saveSettings()">
+    </div>
+  </div>
+  
+  <div class="controls">
+    <button class="btn btn-primary" onclick="saveSettings()">💾 Save Settings</button>
+  </div>
+</div>
+
+</div>
+</div>
+
+<!-- STATUS BAR -->
+<div id="status-bar">
+  <div class="dot pulse" id="status-dot" style="background:var(--ylw)"></div>
+  <span id="status-text">Loading status...</span>
+  <span style="margin-left:auto;font-size:.6rem;">Mesh IRC v1.0.0</span>
+</div>
+
+<script>
+let currentSection = 'status';
+
+function showSection(name) {
+  currentSection = name;
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  event.target.closest('.nav-item')?.classList.add('active');
+  
+  document.getElementById('section-status').style.display = name === 'status' ? 'block' : 'none';
+  document.getElementById('section-clients').style.display = name === 'clients' ? 'block' : 'none';
+  document.getElementById('section-nodes').style.display = name === 'nodes' ? 'block' : 'none';
+  document.getElementById('section-channels').style.display = name === 'channels' ? 'block' : 'none';
+  document.getElementById('section-buffer').style.display = name === 'buffer' ? 'block' : 'none';
+  document.getElementById('section-settings').style.display = name === 'settings' ? 'block' : 'none';
+  
+  // Refresh data for the section
+  if (name === 'clients') loadClients();
+  else if (name === 'nodes') loadNodes();
+  else if (name === 'channels') loadChannels();
+  else if (name === 'buffer') loadBuffer();
+  else if (name === 'settings') loadSettings();
+}
+
+async function fetchJSON(url, options = {}) {
+  try {
+    const res = await fetch(url, {credentials: 'include', ...options});
+    return await res.json();
+  } catch (e) {
+    console.error(e);
+    return null;
+  }
+}
+
+async function loadStatus() {
+  const data = await fetchJSON('/api/plugins/mesh_irc/status');
+  if (!data) {
+    document.getElementById('server-status').textContent = 'Error';
+    document.getElementById('status-dot').style.background = 'var(--red)';
+    document.getElementById('status-text').textContent = 'Failed to load status';
+    return;
+  }
+  
+  const badge = document.getElementById('server-badge');
+  const statServer = document.getElementById('stat-server');
+  
+  if (data.running) {
+    badge.className = 'badge b-grn';
+    badge.textContent = '● Running';
+    statServer.className = 'stat-card running';
+    document.getElementById('server-status').textContent = 'Running';
+    document.getElementById('status-dot').style.background = 'var(--grn)';
+    document.getElementById('status-text').textContent = `IRC server on port ${data.port}`;
+  } else {
+    badge.className = 'badge b-red';
+    badge.textContent = '● Stopped';
+    statServer.className = 'stat-card stopped';
+    document.getElementById('server-status').textContent = 'Stopped';
+    document.getElementById('status-dot').style.background = 'var(--red)';
+    document.getElementById('status-text').textContent = 'IRC server not running';
+  }
+  
+  document.getElementById('server-port').textContent = data.port;
+  document.getElementById('stat-clients').textContent = data.clients;
+  document.getElementById('stat-nodes').textContent = data.virtual_nodes;
+  document.getElementById('stat-channels').textContent = data.channels;
+  document.getElementById('stat-buffered').textContent = data.buffered_messages;
+}
+
+async function loadClients() {
+  const data = await fetchJSON('/api/plugins/mesh_irc/clients');
+  const container = document.getElementById('clients-list');
+  
+  if (!data || !data.clients || data.clients.length === 0) {
+    container.innerHTML = '<div class="empty">No IRC clients connected</div>';
+    return;
+  }
+  
+  let html = '<table class="data-table"><thead><tr><th>Nickname</th><th>Username</th><th>Channels</th></tr></thead><tbody>';
+  for (const c of data.clients) {
+    html += `<tr>
+      <td class="nick">${escapeHtml(c.nickname)}</td>
+      <td>${escapeHtml(c.username)}</td>
+      <td>${c.channels.map(ch => `<span class="channel">${escapeHtml(ch)}</span>`).join(' ')}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+async function loadNodes() {
+  const data = await fetchJSON('/api/plugins/mesh_irc/nodes');
+  const container = document.getElementById('nodes-list');
+  
+  if (!data || !data.nodes || data.nodes.length === 0) {
+    container.innerHTML = '<div class="empty">No mesh nodes discovered yet</div>';
+    return;
+  }
+  
+  let html = '<table class="data-table"><thead><tr><th>IRC Nickname</th><th>Node ID</th><th>Long Name</th><th>Short Name</th></tr></thead><tbody>';
+  for (const n of data.nodes) {
+    html += `<tr>
+      <td class="nick">${escapeHtml(n.irc_nickname)}</td>
+      <td class="node-id">${escapeHtml(n.node_id)}</td>
+      <td>${escapeHtml(n.long_name)}</td>
+      <td>${escapeHtml(n.short_name || '-')}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+async function loadChannels() {
+  const data = await fetchJSON('/api/plugins/mesh_irc/channels');
+  const container = document.getElementById('channels-list');
+  
+  if (!data || !data.channels || data.channels.length === 0) {
+    container.innerHTML = '<div class="empty">No channels yet</div>';
+    return;
+  }
+  
+  let html = '<table class="data-table"><thead><tr><th>Channel</th><th>Members</th><th>Mesh Index</th><th>Topic</th></tr></thead><tbody>';
+  for (const c of data.channels) {
+    html += `<tr>
+      <td class="channel">${escapeHtml(c.name)}</td>
+      <td>${c.members}</td>
+      <td class="node-id">${c.mesh_channel_index !== null ? c.mesh_channel_index : '-'}</td>
+      <td>${escapeHtml(c.topic || '-')}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+async function loadBuffer() {
+  const data = await fetchJSON('/api/plugins/mesh_irc/buffer');
+  const container = document.getElementById('buffer-list');
+  
+  if (!data || !data.messages || data.messages.length === 0) {
+    container.innerHTML = '<div class="empty">No buffered messages</div>';
+    return;
+  }
+  
+  let html = '<table class="data-table"><thead><tr><th>Time</th><th>Channel</th><th>From</th><th>Message</th></tr></thead><tbody>';
+  for (const m of data.messages) {
+    const date = new Date(m.timestamp * 1000);
+    const timeStr = date.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    html += `<tr>
+      <td>${timeStr}</td>
+      <td class="channel">${escapeHtml(m.channel_name)}</td>
+      <td class="nick">${escapeHtml(m.from_nick)}</td>
+      <td>${escapeHtml(m.message)}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+async function clearBuffer() {
+  if (!confirm('Clear all buffered messages?')) return;
+  await fetchJSON('/api/plugins/mesh_irc/buffer/clear', {method: 'POST'});
+  loadBuffer();
+}
+
+async function loadSettings() {
+  const data = await fetchJSON('/api/plugins/mesh_irc/settings');
+  if (data) {
+    document.getElementById('setting-bnc-enabled').checked = data.bnc_enabled;
+    document.getElementById('setting-buffer-size').value = data.buffer_size;
+    document.getElementById('setting-keep-replay').checked = data.keep_after_replay;
+    document.getElementById('setting-irc-port').value = data.irc_port;
+    document.getElementById('setting-irc-password-enabled').checked = data.irc_password_enabled;
+    const pwdInput = document.getElementById('setting-irc-password');
+    pwdInput.value = data.irc_password || '';
+    pwdInput.placeholder = data.irc_password ? '' : 'Auto (short_name)';
+  }
+}
+
+async function saveSettings(event) {
+  const settings = {
+    bnc_enabled: document.getElementById('setting-bnc-enabled').checked,
+    buffer_size: parseInt(document.getElementById('setting-buffer-size').value),
+    keep_after_replay: document.getElementById('setting-keep-replay').checked,
+    irc_port: parseInt(document.getElementById('setting-irc-port').value),
+    irc_password_enabled: document.getElementById('setting-irc-password-enabled').checked,
+    irc_password: document.getElementById('setting-irc-password').value
+  };
+  
+  const res = await fetchJSON('/api/plugins/mesh_irc/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(settings)
+  });
+  
+  // Show saved feedback
+  const btn = event && event.target ? (event.target.closest('.btn') || event.target) : document.querySelector('#section-settings .btn-primary');
+  if (btn) {
+    const origText = btn.innerHTML;
+    btn.innerHTML = '✓ Saved!';
+    setTimeout(() => btn.innerHTML = origText, 1500);
+  }
+}
+
+async function refreshAll() {
+  await loadStatus();
+  if (currentSection === 'clients') loadClients();
+  else if (currentSection === 'nodes') loadNodes();
+  else if (currentSection === 'channels') loadChannels();
+  else if (currentSection === 'buffer') loadBuffer();
+  else if (currentSection === 'settings') loadSettings();
+}
+
+async function restartServer() {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin">⟳</span> Restarting...';
+  
+  await fetchJSON('/api/plugins/mesh_irc/restart');
+  
+  setTimeout(async () => {
+    btn.disabled = false;
+    btn.innerHTML = '🔁 Restart Server';
+    await refreshAll();
+  }, 2000);
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&')
+    .replace(/</g, '<')
+    .replace(/>/g, '>')
+    .replace(/"/g, '"');
+}
+
+// Initialize
+loadStatus();
+setInterval(loadStatus, 5000);
+</script>
+</body>
+</html>
