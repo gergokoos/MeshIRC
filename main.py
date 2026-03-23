@@ -32,55 +32,111 @@ BNC_BUFFER_LIMIT = 50  # Max messages per channel to buffer
 BNC_ENABLED = True  # BNC buffering enabled by default
 BNC_KEEP_AFTER_REPLAY = False  # Keep messages after replay instead of deleting
 BNC_UNAVAILABLE = False  # True if db_manager is not available
-
-# Settings file path
-_SETTINGS_FILE = "/tmp/mesh_irc_settings.json"
+SETTINGS_UNAVAILABLE = False  # True if settings cannot be loaded from db
 
 # ===========================================================================
-# Settings Persistence
+# Settings Persistence (stored in shared database)
 # ===========================================================================
+
+def _init_settings_table():
+    """Initialize the settings table in the shared database."""
+    try:
+        conn = _get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS irc_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+        conn.commit()
+    except Exception as e:
+        logger.warning(f"Failed to initialize settings table: {e}")
+
+
+def _get_setting(key: str, default=None):
+    """Get a setting from the database."""
+    try:
+        conn = _get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM irc_settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        if row:
+            return row[0]
+        return default
+    except Exception as e:
+        logger.warning(f"Failed to get setting {key}: {e}")
+        return default
+
+
+def _set_setting(key: str, value):
+    """Set a setting in the database."""
+    global db_manager
+    try:
+        if db_manager is None:
+            logger.error(f"Cannot save setting {key}: db_manager is None!")
+            return
+        conn = db_manager._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO irc_settings (key, value) VALUES (?, ?)",
+            (key, str(value) if value is not None else None)
+        )
+        conn.commit()
+        logger.info(f"✓ Saved setting: {key} = {value}")
+    except Exception as e:
+        logger.error(f"Failed to save setting {key}: {e}")
+
 
 def load_settings():
-    """Load settings from file."""
-    global IRC_PORT, IRC_PASSWORD, IRC_PASSWORD_ENABLED, BNC_BUFFER_LIMIT, BNC_ENABLED, BNC_KEEP_AFTER_REPLAY, BNC_UNAVAILABLE
+    """Load settings from database."""
+    global IRC_PORT, IRC_PASSWORD, IRC_PASSWORD_ENABLED, BNC_BUFFER_LIMIT, BNC_ENABLED, BNC_KEEP_AFTER_REPLAY, BNC_UNAVAILABLE, SETTINGS_UNAVAILABLE
+    
     try:
-        import json
-        with open(_SETTINGS_FILE, 'r') as f:
-            data = json.load(f)
-        IRC_PORT = data.get('irc_port', 6667)
-        IRC_PASSWORD = data.get('irc_password')
-        IRC_PASSWORD_ENABLED = data.get('irc_password_enabled', True)
-        BNC_BUFFER_LIMIT = data.get('buffer_size', 50)
-        BNC_KEEP_AFTER_REPLAY = data.get('keep_after_replay', False)
+        # Initialize settings table
+        _init_settings_table()
+        
+        # Load each setting
+        IRC_PORT = int(_get_setting('irc_port', 6667))
+        IRC_PASSWORD = _get_setting('irc_password')
+        if IRC_PASSWORD == '':
+            IRC_PASSWORD = None
+        IRC_PASSWORD_ENABLED = _get_setting('irc_password_enabled', 'True') == 'True'
+        BNC_BUFFER_LIMIT = int(_get_setting('buffer_size', 50))
+        BNC_KEEP_AFTER_REPLAY = _get_setting('keep_after_replay', 'False') == 'True'
+        
         # Respect user preference if BNC is available, otherwise force disable
         if BNC_UNAVAILABLE:
             BNC_ENABLED = False
         else:
-            BNC_ENABLED = data.get('bnc_enabled', True)
-        logger.info(f"Settings loaded from {_SETTINGS_FILE}")
+            BNC_ENABLED = _get_setting('bnc_enabled', 'True') == 'True'
+        
+        SETTINGS_UNAVAILABLE = False
+        logger.info("Settings loaded from database")
     except Exception as e:
-        logger.info(f"No saved settings found, using defaults")
+        logger.warning(f"Failed to load settings from database: {e}")
+        SETTINGS_UNAVAILABLE = True
         if BNC_UNAVAILABLE:
             BNC_ENABLED = False
 
-def save_settings_to_file():
-    """Save settings to file."""
-    global IRC_PORT, IRC_PASSWORD, IRC_PASSWORD_ENABLED, BNC_BUFFER_LIMIT, BNC_ENABLED, BNC_KEEP_AFTER_REPLAY
+
+def save_settings():
+    """Save settings to database."""
+    global SETTINGS_UNAVAILABLE
+    
     try:
-        import json
-        data = {
-            'irc_port': IRC_PORT,
-            'irc_password': IRC_PASSWORD,
-            'irc_password_enabled': IRC_PASSWORD_ENABLED,
-            'buffer_size': BNC_BUFFER_LIMIT,
-            'bnc_enabled': BNC_ENABLED,
-            'keep_after_replay': BNC_KEEP_AFTER_REPLAY
-        }
-        with open(_SETTINGS_FILE, 'w') as f:
-            json.dump(data, f)
-        logger.info(f"Settings saved to {_SETTINGS_FILE}")
+        _set_setting('irc_port', IRC_PORT)
+        _set_setting('irc_password', IRC_PASSWORD if IRC_PASSWORD else '')
+        _set_setting('irc_password_enabled', str(IRC_PASSWORD_ENABLED))
+        _set_setting('buffer_size', BNC_BUFFER_LIMIT)
+        _set_setting('bnc_enabled', str(BNC_ENABLED))
+        _set_setting('keep_after_replay', str(BNC_KEEP_AFTER_REPLAY))
+        
+        SETTINGS_UNAVAILABLE = False
+        logger.info("Settings saved to database")
     except Exception as e:
-        logger.warning(f"Failed to save settings: {e}")
+        logger.warning(f"Failed to save settings to database: {e}")
+        SETTINGS_UNAVAILABLE = True
 
 # IRC state
 _irc_server_task: Optional[asyncio.Task] = None
@@ -1392,7 +1448,9 @@ def init_plugin(context: dict):
     logger.info("✅ Mesh IRC plugin initializing…")
     
     # Get db_manager from parent (thread-safe, handles locks and connections)
+    # NOTE: Must use 'global db_manager' to update module-level variable
     db_manager = context.get("db_manager")
+    logger.info(f"db_manager received: {type(db_manager).__name__} (None={db_manager is None})")
     if db_manager is None:
         # BNC not available - graceful degradation
         BNC_UNAVAILABLE = True
@@ -1576,37 +1634,40 @@ async def save_settings_endpoint(settings: Dict[str, Any]):
     """Save plugin settings."""
     global BNC_BUFFER_LIMIT, BNC_ENABLED, IRC_PORT, BNC_KEEP_AFTER_REPLAY, IRC_PASSWORD, IRC_PASSWORD_ENABLED, BNC_UNAVAILABLE
     
-    # Respect user preference for BNC (only if available)
-    if not BNC_UNAVAILABLE and "bnc_enabled" in settings:
-        BNC_ENABLED = bool(settings["bnc_enabled"])
-    if "buffer_size" in settings:
-        BNC_BUFFER_LIMIT = max(1, min(500, int(settings["buffer_size"])))
-    if "keep_after_replay" in settings:
-        BNC_KEEP_AFTER_REPLAY = bool(settings["keep_after_replay"])
-    if "irc_port" in settings:
-        new_port = max(1024, min(65535, int(settings["irc_port"])))
-        if new_port != IRC_PORT:
-            IRC_PORT = new_port
-            # Restart server on port change
-            await stop_irc_server()
-            await asyncio.sleep(0.5)
-            await start_irc_server()
-    if "irc_password_enabled" in settings:
-        IRC_PASSWORD_ENABLED = bool(settings["irc_password_enabled"])
-    if "irc_password" in settings:
-        pwd = settings["irc_password"]
-        if pwd and pwd.strip():
-            IRC_PASSWORD = pwd.strip()
-            logger.info(f"IRC password set to: {IRC_PASSWORD}")
-        else:
-            IRC_PASSWORD = None  # Reset to auto (short_name)
-            logger.info("IRC password reset to auto (short_name)")
-    
-    # Save to file for persistence
-    save_settings_to_file()
-    
-    logger.info(f"Settings saved: bnc_enabled={BNC_ENABLED}, buffer_size={BNC_BUFFER_LIMIT}, keep_after_replay={BNC_KEEP_AFTER_REPLAY}, irc_port={IRC_PORT}, irc_password_enabled={IRC_PASSWORD_ENABLED}, irc_password={'set' if IRC_PASSWORD else 'auto'}")
-    return {"status": "ok"}
-
-# Alias for backward compatibility
-save_settings = save_settings_endpoint
+    try:
+        # Respect user preference for BNC (only if available)
+        if not BNC_UNAVAILABLE and "bnc_enabled" in settings:
+            BNC_ENABLED = bool(settings["bnc_enabled"])
+        if "buffer_size" in settings:
+            BNC_BUFFER_LIMIT = max(1, min(500, int(settings["buffer_size"])))
+        if "keep_after_replay" in settings:
+            BNC_KEEP_AFTER_REPLAY = bool(settings["keep_after_replay"])
+        if "irc_port" in settings:
+            new_port = max(1024, min(65535, int(settings["irc_port"])))
+            if new_port != IRC_PORT:
+                IRC_PORT = new_port
+                # Restart server on port change
+                await stop_irc_server()
+                await asyncio.sleep(0.5)
+                await start_irc_server()
+        if "irc_password_enabled" in settings:
+            IRC_PASSWORD_ENABLED = bool(settings["irc_password_enabled"])
+        if "irc_password" in settings:
+            pwd = settings["irc_password"]
+            if pwd and pwd.strip():
+                IRC_PASSWORD = pwd.strip()
+                logger.info(f"IRC password set to: {IRC_PASSWORD}")
+            else:
+                IRC_PASSWORD = None  # Reset to auto (short_name)
+                logger.info("IRC password reset to auto (short_name)")
+        
+        # Save to database
+        save_settings()
+        
+        logger.info(f"Settings saved: bnc_enabled={BNC_ENABLED}, buffer_size={BNC_BUFFER_LIMIT}, keep_after_replay={BNC_KEEP_AFTER_REPLAY}, irc_port={IRC_PORT}, irc_password_enabled={IRC_PASSWORD_ENABLED}, irc_password={'set' if IRC_PASSWORD else 'auto'}")
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"ERROR in save_settings_endpoint: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise
