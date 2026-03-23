@@ -31,6 +31,7 @@ IRC_PASSWORD_ENABLED = True  # Require password for connections
 BNC_BUFFER_LIMIT = 50  # Max messages per channel to buffer
 BNC_ENABLED = True  # BNC buffering enabled by default
 BNC_KEEP_AFTER_REPLAY = False  # Keep messages after replay instead of deleting
+BNC_UNAVAILABLE = False  # True if db_manager is not available
 
 # Settings file path
 _SETTINGS_FILE = "/tmp/mesh_irc_settings.json"
@@ -41,7 +42,7 @@ _SETTINGS_FILE = "/tmp/mesh_irc_settings.json"
 
 def load_settings():
     """Load settings from file."""
-    global IRC_PORT, IRC_PASSWORD, IRC_PASSWORD_ENABLED, BNC_BUFFER_LIMIT, BNC_ENABLED, BNC_KEEP_AFTER_REPLAY
+    global IRC_PORT, IRC_PASSWORD, IRC_PASSWORD_ENABLED, BNC_BUFFER_LIMIT, BNC_ENABLED, BNC_KEEP_AFTER_REPLAY, BNC_UNAVAILABLE
     try:
         import json
         with open(_SETTINGS_FILE, 'r') as f:
@@ -50,11 +51,17 @@ def load_settings():
         IRC_PASSWORD = data.get('irc_password')
         IRC_PASSWORD_ENABLED = data.get('irc_password_enabled', True)
         BNC_BUFFER_LIMIT = data.get('buffer_size', 50)
-        BNC_ENABLED = data.get('bnc_enabled', True)
         BNC_KEEP_AFTER_REPLAY = data.get('keep_after_replay', False)
+        # Respect user preference if BNC is available, otherwise force disable
+        if BNC_UNAVAILABLE:
+            BNC_ENABLED = False
+        else:
+            BNC_ENABLED = data.get('bnc_enabled', True)
         logger.info(f"Settings loaded from {_SETTINGS_FILE}")
     except Exception as e:
         logger.info(f"No saved settings found, using defaults")
+        if BNC_UNAVAILABLE:
+            BNC_ENABLED = False
 
 def save_settings_to_file():
     """Save settings to file."""
@@ -79,29 +86,26 @@ def save_settings_to_file():
 _irc_server_task: Optional[asyncio.Task] = None
 _irc_server: Optional['IRCServer'] = None
 _sse_task: Optional[asyncio.Task] = None
-_db_path: str = None
 _settings: Dict[str, Any] = {}
 _local_node_id: str = None  # Track local node ID for op status
+db_manager = None  # Parent's DatabaseManager (thread-safe, inherited from parent)
 
 
 # ===========================================================================
 # Database Functions
 # ===========================================================================
+# Uses parent's db_manager for thread-safety. Requires db_manager to be available.
 
-def get_db_path() -> str:
-    """Get the database path for the IRC buffer."""
-    global _db_path
-    if _db_path is None:
-        # Use a temp directory or current directory
-        import tempfile
-        _db_path = "/tmp/mesh_irc_buffer.db"
-    return _db_path
+def _get_db_connection():
+    """Get a database connection from parent's db_manager."""
+    if db_manager is None:
+        raise RuntimeError("db_manager not available - plugin requires parent's database")
+    return db_manager._get_connection()
 
 
 def init_db():
-    """Initialize the database for message buffering."""
-    db_path = get_db_path()
-    conn = sqlite3.connect(db_path)
+    """Initialize the database for message buffering using parent's db_manager."""
+    conn = _get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS irc_buffer (
@@ -114,15 +118,13 @@ def init_db():
         )
     """)
     conn.commit()
-    conn.close()
-    logger.info(f"IRC buffer database initialized at {db_path}")
+    logger.info("IRC buffer table initialized via parent's db_manager")
 
 
 def buffer_message(channel_name: str, from_nick: str, from_id: str, message: str):
-    """Buffer a message to the database."""
+    """Buffer a message to the database using parent's db_manager."""
     try:
-        db_path = get_db_path()
-        conn = sqlite3.connect(db_path)
+        conn = _get_db_connection()
         cursor = conn.cursor()
         
         # Insert the message
@@ -143,7 +145,6 @@ def buffer_message(channel_name: str, from_nick: str, from_id: str, message: str
         """, (channel_name, channel_name, BNC_BUFFER_LIMIT))
         
         conn.commit()
-        conn.close()
     except Exception as e:
         logger.warning(f"Failed to buffer message: {e}")
 
@@ -151,8 +152,7 @@ def buffer_message(channel_name: str, from_nick: str, from_id: str, message: str
 def get_buffered_messages(channel_name: str = None) -> List[Dict]:
     """Get buffered messages, optionally filtered by channel."""
     try:
-        db_path = get_db_path()
-        conn = sqlite3.connect(db_path)
+        conn = _get_db_connection()
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
@@ -168,7 +168,6 @@ def get_buffered_messages(channel_name: str = None) -> List[Dict]:
             )
         
         rows = cursor.fetchall()
-        conn.close()
         
         return [dict(row) for row in rows]
     except Exception as e:
@@ -179,8 +178,7 @@ def get_buffered_messages(channel_name: str = None) -> List[Dict]:
 def clear_buffered_messages(channel_name: str = None):
     """Clear buffered messages, optionally for a specific channel."""
     try:
-        db_path = get_db_path()
-        conn = sqlite3.connect(db_path)
+        conn = _get_db_connection()
         cursor = conn.cursor()
         
         if channel_name:
@@ -189,7 +187,6 @@ def clear_buffered_messages(channel_name: str = None):
             cursor.execute("DELETE FROM irc_buffer")
         
         conn.commit()
-        conn.close()
         logger.info(f"Cleared IRC buffer" + (f" for {channel_name}" if channel_name else ""))
     except Exception as e:
         logger.warning(f"Failed to clear buffer: {e}")
@@ -1388,17 +1385,31 @@ async def _watchdog_heartbeat():
 # ===========================================================================
 
 def init_plugin(context: dict):
-    global logger, _irc_server_task
+    global logger, _irc_server_task, db_manager, BNC_UNAVAILABLE, BNC_ENABLED
     
     core_context.update(context)
     logger = core_context.get("logger") or logging.getLogger("mesh_irc")
     logger.info("✅ Mesh IRC plugin initializing…")
     
+    # Get db_manager from parent (thread-safe, handles locks and connections)
+    db_manager = context.get("db_manager")
+    if db_manager is None:
+        # BNC not available - graceful degradation
+        BNC_UNAVAILABLE = True
+        BNC_ENABLED = False
+        logger.warning("⚠️  db_manager not available - BNC buffering disabled")
+    else:
+        BNC_UNAVAILABLE = False
+        # Initialize the database
+        try:
+            init_db()
+        except Exception as e:
+            logger.warning(f"⚠️  Failed to initialize IRC buffer table: {e}")
+            BNC_UNAVAILABLE = True
+            BNC_ENABLED = False
+    
     # Load saved settings
     load_settings()
-    
-    # Initialize the database
-    init_db()
     
     loop = core_context.get("event_loop")
     if loop is None:
@@ -1548,9 +1559,10 @@ async def log_test():
 @plugin_router.get("/settings")
 async def get_settings():
     """Get plugin settings."""
-    global BNC_BUFFER_LIMIT, BNC_ENABLED, IRC_PORT, BNC_KEEP_AFTER_REPLAY, IRC_PASSWORD, IRC_PASSWORD_ENABLED
+    global BNC_BUFFER_LIMIT, BNC_ENABLED, IRC_PORT, BNC_KEEP_AFTER_REPLAY, IRC_PASSWORD, IRC_PASSWORD_ENABLED, BNC_UNAVAILABLE
     return {
         "bnc_enabled": BNC_ENABLED,
+        "bnc_unavailable": BNC_UNAVAILABLE,
         "buffer_size": BNC_BUFFER_LIMIT,
         "keep_after_replay": BNC_KEEP_AFTER_REPLAY,
         "irc_port": IRC_PORT,
@@ -1562,9 +1574,10 @@ async def get_settings():
 @plugin_router.post("/settings")
 async def save_settings_endpoint(settings: Dict[str, Any]):
     """Save plugin settings."""
-    global BNC_BUFFER_LIMIT, BNC_ENABLED, IRC_PORT, BNC_KEEP_AFTER_REPLAY, IRC_PASSWORD, IRC_PASSWORD_ENABLED
+    global BNC_BUFFER_LIMIT, BNC_ENABLED, IRC_PORT, BNC_KEEP_AFTER_REPLAY, IRC_PASSWORD, IRC_PASSWORD_ENABLED, BNC_UNAVAILABLE
     
-    if "bnc_enabled" in settings:
+    # Respect user preference for BNC (only if available)
+    if not BNC_UNAVAILABLE and "bnc_enabled" in settings:
         BNC_ENABLED = bool(settings["bnc_enabled"])
     if "buffer_size" in settings:
         BNC_BUFFER_LIMIT = max(1, min(500, int(settings["buffer_size"])))

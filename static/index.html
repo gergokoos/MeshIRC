@@ -268,8 +268,11 @@ body::before{content:'';position:fixed;inset:0;background:repeating-linear-gradi
   <div class="settings-card">
     <div class="settings-row">
       <div>
-        <div class="settings-label">Enable BNC Buffering</div>
+        <div class="settings-label">BNC Buffering</div>
         <div class="settings-desc">Buffer messages when no IRC client is connected</div>
+        <div id="bnc-notice" class="settings-notice" style="margin-top:6px;padding:8px 10px;background:rgba(0,212,255,.08);border:1px solid rgba(0,212,255,.15);border-radius:6px;font-family:var(--mono);font-size:.6rem;color:var(--acc);display:none;">
+          ✓ BNC enabled (uses shared database)
+        </div>
       </div>
       <label class="toggle">
         <input type="checkbox" id="setting-bnc-enabled" onchange="saveSettings()">
@@ -515,7 +518,30 @@ async function clearBuffer() {
 async function loadSettings() {
   const data = await fetchJSON('/api/plugins/mesh_irc/settings');
   if (data) {
-    document.getElementById('setting-bnc-enabled').checked = data.bnc_enabled;
+    const bncToggle = document.getElementById('setting-bnc-enabled');
+    const bncNotice = document.getElementById('bnc-notice');
+    
+    // Handle BNC availability
+    if (data.bnc_unavailable) {
+      // Force disable toggle and show warning notice
+      bncToggle.checked = false;
+      bncToggle.disabled = true;
+      bncNotice.style.display = 'block';
+      bncNotice.style.background = 'rgba(255,209,102,.1)';
+      bncNotice.style.borderColor = 'rgba(255,209,102,.2)';
+      bncNotice.style.color = 'var(--ylw)';
+      bncNotice.textContent = '⚠️ BNC unavailable - requires MeshDash database connection';
+    } else {
+      // Normal mode - allow user to toggle
+      bncToggle.checked = data.bnc_enabled;
+      bncToggle.disabled = false;
+      bncNotice.style.display = 'none';
+      bncNotice.style.background = 'rgba(0,212,255,.08)';
+      bncNotice.style.borderColor = 'rgba(0,212,255,.15)';
+      bncNotice.style.color = 'var(--acc)';
+      bncNotice.textContent = '✓ BNC enabled (uses shared database)';
+    }
+    
     document.getElementById('setting-buffer-size').value = data.buffer_size;
     document.getElementById('setting-keep-replay').checked = data.keep_after_replay;
     document.getElementById('setting-irc-port').value = data.irc_port;
