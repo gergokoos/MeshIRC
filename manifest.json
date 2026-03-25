@@ -1,7 +1,7 @@
 {
   "id": "mesh_irc",
   "name": "Mesh IRC",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "grg",
   "description": "Standalone IRC server that bridges all Meshtastic mesh channels and nodes bidirectionally.",
   "entry_point": "main.py",

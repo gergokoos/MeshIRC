@@ -33,6 +33,7 @@ BNC_ENABLED = True  # BNC buffering enabled by default
 BNC_KEEP_AFTER_REPLAY = False  # Keep messages after replay instead of deleting
 BNC_UNAVAILABLE = False  # True if db_manager is not available
 SETTINGS_UNAVAILABLE = False  # True if settings cannot be loaded from db
+DEBUG_SSE = False  # Set to True to enable verbose SSE logging
 
 # ===========================================================================
 # Settings Persistence (stored in shared database)
@@ -330,6 +331,7 @@ class VirtualMeshClient:
         self.realname = long_name or node_id
         self.last_seen = None  # Will be updated from mesh data
         self.voice_by_channel: Dict[str, bool] = {}  # Track voice status per channel
+        self._node_data: Dict = {}  # Store full node data from Node Info packets for WHOIS
     
     @staticmethod
     def _sanitize_part(nick: str) -> str:
@@ -533,10 +535,11 @@ class IRCServer:
             nodes = getattr(meshtastic_data, 'nodes', {})
             for node_id, node in nodes.items():
                 if node.get('isLocal', False):
-                    return (
-                        node.get('long_name', 'MeshUser'),
-                        node.get('short_name', None)
-                    )
+                    # Check new format (nested in user object) first, then old format
+                    user = node.get('user', {})
+                    long_name = user.get('longName') or node.get('long_name') or node.get('longName') or 'MeshUser'
+                    short_name = user.get('shortName') or node.get('short_name') or node.get('shortName')
+                    return (long_name, short_name)
         return ('MeshUser', None)
     
     def get_channel_nicklist(self, channel: IRCChannel) -> str:
@@ -938,6 +941,32 @@ class IRCServer:
             if hw_model:
                 await client.send(f":{IRC_SERVER_NAME} 307 {client.nickname} {virtual.irc_nickname} :hwModel={hw_model}")
             
+            # Signal info (SNR, RSSI)
+            snr = node_info.get('snr')
+            if snr is not None:
+                await client.send(f":{IRC_SERVER_NAME} 307 {client.nickname} {virtual.irc_nickname} :snr={snr}dB")
+            
+            rssi = node_info.get('rssi')
+            if rssi is not None:
+                await client.send(f":{IRC_SERVER_NAME} 307 {client.nickname} {virtual.irc_nickname} :rssi={rssi}dBm")
+            
+            # Hops and source
+            hops = node_info.get('hopsAway')
+            if hops is not None:
+                await client.send(f":{IRC_SERVER_NAME} 307 {client.nickname} {virtual.irc_nickname} :hops={hops}")
+            
+            source = node_info.get('source')
+            if source:
+                await client.send(f":{IRC_SERVER_NAME} 307 {client.nickname} {virtual.irc_nickname} :source={source}")
+            
+            # Location if available
+            position = node_info.get('position', {})
+            if position:
+                lat = position.get('latitude')
+                lon = position.get('longitude')
+                if lat is not None and lon is not None:
+                    await client.send(f":{IRC_SERVER_NAME} 307 {client.nickname} {virtual.irc_nickname} :location={lat},{lon}")
+            
             await client.send(f":{IRC_SERVER_NAME} 312 {client.nickname} {virtual.irc_nickname} {IRC_SERVER_NAME} :Meshtastic Node ({virtual.node_id})")
             await client.send(f":{IRC_SERVER_NAME} 318 {client.nickname} {virtual.irc_nickname} :End of WHOIS list")
             return
@@ -1198,25 +1227,43 @@ class IRCServer:
         current_node_ids = set(self.virtual_clients.keys())
         new_node_ids = set(nodes.keys())
         
+        logger.info(f"NODE_UPDATE: Processing {len(nodes)} nodes from API")
+        
         for node_id, node in nodes.items():
             # Track local node
             if node.get('isLocal', False):
                 _local_node_id = node_id
             
+            # Get node info
+            user = node.get('user', {})
+            long_name = user.get('longName') or node.get('long_name') or node.get('longName') or node_id
+            short_name = user.get('shortName') or node.get('short_name') or node.get('shortName')
+            
             if node_id not in self.virtual_clients:
-                long_name = node.get('long_name', node_id)
-                short_name = node.get('short_name')
+                # New node - create virtual client
                 virtual = VirtualMeshClient(node_id, long_name, short_name)
                 self.virtual_clients[node_id] = virtual
-                logger.info(f"Added virtual client for mesh node: {long_name} ({node_id})")
+                logger.info(f"NODE_UPDATE: Added new node: {long_name} ({node_id})")
             else:
-                # Update last_seen if we have activity info
-                # Use lastHeard (newer field) instead of last_heard
-                last_heard = node.get('lastHeard') or node.get('last_heard')
-                if last_heard and last_heard > 0:
-                    self.virtual_clients[node_id].last_seen = last_heard
+                # Existing node - log update attempt
+                virtual = self.virtual_clients[node_id]
+                logger.info(f"NODE_UPDATE: Updating existing node: {long_name} ({node_id})")
+            
+            # Update last_seen - keep the most recent timestamp
+            # This ensures SSE updates (time.time()) aren't overwritten by stale API data
+            last_heard = node.get('lastHeard') or node.get('last_heard')
+            current_last_seen = virtual.last_seen or 0
+            logger.info(f"NODE_UPDATE: last_heard from API={last_heard}, current last_seen={current_last_seen}")
+            
+            if last_heard and last_heard > 0:
+                new_last_seen = max(current_last_seen, last_heard)
+                virtual.last_seen = new_last_seen
+                logger.info(f"NODE_UPDATE: Set last_seen to {new_last_seen} for {node_id} ({long_name})")
+            else:
+                logger.info(f"NODE_UPDATE: No last_heard in API data for {node_id}")
         
         for node_id in current_node_ids - new_node_ids:
+            logger.info(f"NODE_UPDATE: Removing deleted node: {node_id}")
             del self.virtual_clients[node_id]
     
     async def update_mesh_channels(self, channels: List[Dict[str, Any]]):
@@ -1246,7 +1293,9 @@ def get_node_name(node_id: str) -> str:
         nodes = getattr(meshtastic_data, 'nodes', {})
         if node_id in nodes:
             node = nodes[node_id]
-            return node.get('short_name') or node.get('long_name') or node_id
+            # Check new format (nested in user object) first, then old format
+            user = node.get('user', {})
+            return user.get('shortName') or user.get('longName') or node.get('short_name') or node.get('long_name') or node_id
     return node_id
 
 
@@ -1258,45 +1307,232 @@ async def listen_sse_messages():
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 async with client.stream('GET', 'http://127.0.0.1:8000/sse') as response:
-                    logger.info("SSE connection established")
+                    if DEBUG_SSE:
+                        logger.info("SSE: Connection established, listening for events...")
                     event_type = None
                     async for line in response.aiter_lines():
                         if not _irc_server or not _irc_server._running:
+                            if DEBUG_SSE:
+                                logger.info("SSE: Server stopped, exiting listener")
                             break
+                        
+                        # Log ALL incoming SSE lines for debugging (only if DEBUG_SSE is enabled)
+                        if DEBUG_SSE:
+                            logger.info(f"SSE RAW: {line[:200] if len(line) > 200 else line}")
                         
                         if line.startswith('event: '):
                             event_type = line[7:]
-                        elif line.startswith('data: ') and event_type == 'packet':
-                            try:
-                                data = line[6:]
-                                import json
-                                packet = json.loads(data)
-                                
-                                packet_type = packet.get('packet_type', packet.get('app_packet_type', ''))
-                                if packet_type == 'Message':
-                                    from_id = packet.get('fromId') or str(packet.get('from', ''))
-                                    if not from_id:
-                                        continue
+                            if DEBUG_SSE:
+                                logger.info(f"SSE: Event type changed to: {event_type}")
+                        elif line.startswith('data: '):
+                            data = line[6:]
+                            if DEBUG_SSE:
+                                logger.info(f"SSE: Received data for event_type={event_type}, data_len={len(data)}")
+                            
+                            if event_type == 'packet':
+                                try:
+                                    import json
+                                    packet = json.loads(data)
+                                    if DEBUG_SSE:
+                                        logger.info(f"SSE: Parsed packet: {packet}")
                                     
-                                    from_name = get_node_name(from_id)
-                                    if not from_name:
-                                        from_name = from_id
+                                    packet_type = packet.get('packet_type', packet.get('app_packet_type', ''))
+                                    if DEBUG_SSE:
+                                        logger.info(f"SSE: packet_type={packet_type}")
                                     
-                                    channel = packet.get('channel', 0)
-                                    to_id = packet.get('toId') or packet.get('to')
-                                    text = packet.get('decoded', {}).get('text', '')
+                                    if packet_type == 'Message':
+                                        from_id = packet.get('fromId') or str(packet.get('from', ''))
+                                        if not from_id:
+                                            if DEBUG_SSE:
+                                                logger.info("SSE: No from_id in message, skipping")
+                                            continue
+                                        
+                                        from_name = get_node_name(from_id)
+                                        if not from_name:
+                                            from_name = from_id
+                                        
+                                        channel = packet.get('channel', 0)
+                                        to_id = packet.get('toId') or packet.get('to')
+                                        text = packet.get('decoded', {}).get('text', '')
+                                        
+                                        if DEBUG_SSE:
+                                            logger.info(f"SSE: Processing message - from={from_id} name={from_name} ch={channel} to={to_id} text={text[:100]}")
+                                        
+                                        if text:
+                                            # Update last_seen when we receive a message from this node
+                                            if from_id in _irc_server.virtual_clients:
+                                                _irc_server.virtual_clients[from_id].last_seen = time.time()
+                                                if DEBUG_SSE:
+                                                    logger.info(f"SSE: Updated last_seen for {from_id} to now")
+                                                # Refresh nicklists to update voice prefixes
+                                                await _irc_server.refresh_all_nicklists()
+                                                # Also update voice status to send MODE +v commands
+                                                await _irc_server.check_all_voice_status()
+                                            else:
+                                                if DEBUG_SSE:
+                                                    logger.info(f"SSE: Node {from_id} not in virtual_clients yet, creating temp entry")
+                                            await _irc_server.broadcast_mesh_message(from_id, from_name, channel, text, to_id)
                                     
-                                    if text:
-                                        logger.info(f"SSE Mesh message: from={from_id} name={from_name} ch={channel} to={to_id} text={text}")
-                                        # Update last_seen when we receive a message from this node
-                                        if from_id in _irc_server.virtual_clients:
-                                            _irc_server.virtual_clients[from_id].last_seen = time.time()
-                                            logger.info(f"SSE: Updated last_seen for {from_id} to now")
-                                            # Refresh nicklists to update voice prefixes
-                                            await _irc_server.refresh_all_nicklists()
-                                        await _irc_server.broadcast_mesh_message(from_id, from_name, channel, text, to_id)
-                            except Exception as e:
-                                logger.warning(f"SSE parse error: {e}")
+                                    elif packet_type == 'Telemetry':
+                                        # Telemetry packet - extract SNR/RSSI and update node info
+                                        from_id = packet.get('fromId')
+                                        if from_id and from_id in _irc_server.virtual_clients:
+                                            # Extract SNR/RSSI from telemetry
+                                            decoded = packet.get('decoded', {})
+                                            telemetry = decoded.get('telemetry', {})
+                                            snr = packet.get('_snr') or packet.get('rxSnr')
+                                            rssi = packet.get('_rssi') or packet.get('rxRssi')
+                                            source = packet.get('source')
+                                            
+                                            # Calculate actual hops traveled: hopStart - hopLimit
+                                            # hopLimit is remaining TTL, hopStart is original TTL
+                                            hopStart = packet.get('hopStart') or packet.get('hop_start')
+                                            hopLimit = packet.get('hopLimit') or packet.get('hop_limit')
+                                            hops = (hopStart - hopLimit) if hopStart is not None and hopLimit is not None else None
+                                            
+                                            if DEBUG_SSE:
+                                                logger.info(f"SSE: Telemetry from {from_id} - snr={snr}, rssi={rssi}, hops={hops}")
+                                            
+                                            # Update node data
+                                            _irc_server.virtual_clients[from_id]._node_data = {
+                                                **_irc_server.virtual_clients[from_id]._node_data,
+                                                'snr': snr,
+                                                'rssi': rssi,
+                                                'source': source,
+                                                'hopsAway': hops,
+                                                'position': packet.get('position', {}),
+                                            }
+                                    
+                                    elif packet_type == 'Node Info':
+                                        # Node Info packet - update last_seen for this node
+                                        from_id = packet.get('fromId')
+                                        if not from_id:
+                                            if DEBUG_SSE:
+                                                logger.info("SSE: Node Info packet without fromId, skipping")
+                                        else:
+                                            if DEBUG_SSE:
+                                                logger.info(f"SSE: Processing Node Info packet from {from_id}")
+                                            
+                                            # Update last_seen for this node
+                                            if from_id in _irc_server.virtual_clients:
+                                                _irc_server.virtual_clients[from_id].last_seen = time.time()
+                                                
+                                                # Store full node data for WHOIS, extracting from nested structure
+                                                decoded = packet.get('decoded', {})
+                                                user = decoded.get('user', {})
+                                                
+                                                hw_model = user.get('hwModel') or decoded.get('hwModel') or packet.get('hw_model') or packet.get('hwModel')
+                                                snr = packet.get('snr') or packet.get('_snr')
+                                                rssi = packet.get('rssi') or packet.get('_rssi')
+                                                
+                                                if DEBUG_SSE:
+                                                    logger.info(f"SSE: Node Info - hw_model={hw_model}, snr={snr}, rssi={rssi}, hops={packet.get('hopsAway')}")
+                                                
+                                                _irc_server.virtual_clients[from_id]._node_data = {
+                                                    'hw_model': hw_model,
+                                                    'snr': snr,
+                                                    'rssi': rssi,
+                                                    'hopsAway': packet.get('hopsAway'),
+                                                    'source': packet.get('source'),
+                                                    'position': packet.get('position', {}),
+                                                    'decoded': decoded,
+                                                    'user': user
+                                                }
+                                                
+                                                # Also update node info if available (longName, shortName)
+                                                decoded = packet.get('decoded', {})
+                                                user = decoded.get('user', {})
+                                                if user:
+                                                    long_name = user.get('longName')
+                                                    short_name = user.get('shortName')
+                                                    if long_name:
+                                                        _irc_server.virtual_clients[from_id].long_name = long_name
+                                                    if short_name:
+                                                        _irc_server.virtual_clients[from_id].short_name = short_name
+                                                    # Update irc_nickname if name changed
+                                                    new_irc_nick = VirtualMeshClient._create_irc_nickname(
+                                                        long_name or _irc_server.virtual_clients[from_id].long_name,
+                                                        short_name or _irc_server.virtual_clients[from_id].short_name
+                                                    )
+                                                    if new_irc_nick != _irc_server.virtual_clients[from_id].irc_nickname:
+                                                        if DEBUG_SSE:
+                                                            logger.info(f"SSE: Node Info - Updating nick from {_irc_server.virtual_clients[from_id].irc_nickname} to {new_irc_nick}")
+                                                        _irc_server.virtual_clients[from_id].irc_nickname = new_irc_nick
+                                                
+                                                # Refresh nicklists and voice status
+                                                await _irc_server.refresh_all_nicklists()
+                                                await _irc_server.check_all_voice_status()
+                                            else:
+                                                if DEBUG_SSE:
+                                                    logger.info(f"SSE: Node Info packet for unknown node {from_id}")
+                                except Exception as e:
+                                    logger.warning(f"SSE parse error: {e}")
+                            elif event_type == 'node_update':
+                                # node_update event - contains node info like hwModel, longName, shortName
+                                try:
+                                    import json
+                                    node_data = json.loads(data)
+                                    node_id = node_data.get('node_id')
+                                    user = node_data.get('user', {})
+                                    
+                                    if DEBUG_SSE:
+                                        logger.info(f"SSE: node_update for {node_id}: {user}")
+                                    
+                                    if node_id:
+                                        # Create or update virtual client
+                                        long_name = user.get('longName')
+                                        short_name = user.get('shortName')
+                                        hw_model = user.get('hwModel')
+                                        
+                                        if node_id not in _irc_server.virtual_clients:
+                                            virtual = VirtualMeshClient(node_id, long_name, short_name)
+                                            _irc_server.virtual_clients[node_id] = virtual
+                                            if DEBUG_SSE:
+                                                logger.info(f"SSE: node_update - Created new node: {long_name} ({node_id})")
+                                        else:
+                                            virtual = _irc_server.virtual_clients[node_id]
+                                            if long_name:
+                                                virtual.long_name = long_name
+                                            if short_name:
+                                                virtual.short_name = short_name
+                                        
+                                        # Update node data
+                                        virtual._node_data = {
+                                            'hw_model': hw_model,
+                                            'snr': virtual._node_data.get('snr'),
+                                            'rssi': virtual._node_data.get('rssi'),
+                                            'source': virtual._node_data.get('source'),
+                                        }
+                                        
+                                        # Update IRC nick if name changed
+                                        new_irc_nick = VirtualMeshClient._create_irc_nickname(
+                                            long_name or virtual.long_name,
+                                            short_name or virtual.short_name
+                                        )
+                                        if new_irc_nick != virtual.irc_nickname:
+                                            if DEBUG_SSE:
+                                                logger.info(f"SSE: node_update - Updating nick from {virtual.irc_nickname} to {new_irc_nick}")
+                                            virtual.irc_nickname = new_irc_nick
+                                        
+                                        # Update last_seen
+                                        virtual.last_seen = time.time()
+                                        
+                                        # Refresh nicklists and voice status
+                                        await _irc_server.refresh_all_nicklists()
+                                        await _irc_server.check_all_voice_status()
+                                except Exception as e:
+                                    logger.warning(f"SSE node_update parse error: {e}")
+                            
+                            else:
+                                if DEBUG_SSE:
+                                    logger.info(f"SSE: Ignoring non-packet event type: {event_type}")
+                        elif line.strip() == '':
+                            # Empty line - heartbeat/keepalive from SSE (only log if DEBUG_SSE)
+                            if DEBUG_SSE:
+                                logger.info("SSE: Heartbeat (empty line)")
+                        elif line.startswith(':') and DEBUG_SSE:
+                            # Comment or other SSE field
+                            logger.info(f"SSE: Comment: {line[:100]}")
         
         except asyncio.CancelledError:
             logger.info("🛑 SSE listener stopped")
